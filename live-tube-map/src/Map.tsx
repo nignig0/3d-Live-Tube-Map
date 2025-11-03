@@ -3,6 +3,7 @@ import { useEffect, useRef } from "react";
 import "mapbox-gl/dist/mapbox-gl.css";
 import * as turf from '@turf/turf';
 import { lineString } from '@turf/helpers'
+import { locationType } from "./enums";
 
 mapboxgl.accessToken = import.meta.env.VITE_MAP_KEY as string;
 const TFL_BASE_URL = "https://api.tfl.gov.uk"
@@ -25,6 +26,38 @@ const stationNameCoordinateMap: {[key: string]: number[] } = {};
 const lineIdTurfLineStringMap: {[key: string]: any} = {};
 const lineIdStationNamesMap: {[key: string]: Set<string>} = {};
 
+const  containsSubstring = (fullString: string, subString: string): boolean =>{
+  // Escape special regex characters in the substring
+  const escapedSubString = subString.replace(/[.*+?^${}()|[\]\\]/g, '\\$&');
+  
+  // Create a regex to check if fullString contains subString
+  const regex = new RegExp(escapedSubString, 'i'); // 'i' for case-insensitive
+  
+  return regex.test(fullString);
+}
+const getTurfLineStringFromStations = (
+    stationA: string,
+    stationB: string,
+    lineIdTurfLineStringMap: {[key: string]: any}, 
+    lineIdStationNamesMap: {[key: string]: Set<string> }) =>{
+        for(const lineId of Object.keys(lineIdStationNamesMap)){
+            let found = false;
+            let stationACoord: number[] = [];
+            for(const stationName of lineIdStationNamesMap[lineId]){
+                if(containsSubstring(stationName, stationA)){
+                    found = true;
+                    stationACoord = stationNameCoordinateMap[stationName];
+                }
+            }
+            for(const stationName of lineIdStationNamesMap[lineId]){
+                if(containsSubstring(stationName, stationB) && found) return {
+                    turfLineString: lineIdTurfLineStringMap[lineId],
+                    stationACoord: stationACoord,
+                    stationBCoord: stationNameCoordinateMap[stationName]
+                }
+            }
+        }
+    }
 
 
 const getTubeLines = async()=>{
@@ -41,34 +74,44 @@ const getLineGeometry = async(id: string)=>{
     return response;
 }
 
+const getArrivals = async(id: string)=>{
+    const request = await fetch(`${TFL_BASE_URL}/line/${id}/arrivals`);
+    const response = await request.json();
+    return response;
+}
+
 const parseCurrentLocation = (currentLocation: string, stationName?: string)=>{
     let match;
     if(match = currentLocation.match(/Between (.+?) and (.+)/)){
         return {
-            type: 'between',
+            type: locationType.BETWEEN,
             stationA: match[1],
             stationB: match[2]
         }
     }
 
     if(currentLocation === "At Platform"){
-        return { type: 'atPlatform', station: stationName };
+        return { type: locationType.AT_PLATFORM, station: stationName };
     }
 
     if(match = currentLocation.match(/^At (.+)/)){
-        return { type: 'at', station: match[1] };
+        return { type: locationType.AT, station: match[1] };
     }
 
     if(match = currentLocation.match(/Approaching (.+)/)){
-        return { type: 'approaching', station: match[1] };
+        return { type: locationType.APPROACHING, station: match[1] };
     }
 
     if(match = currentLocation.match(/Leaving (.+)/)){
-        return { type: 'leaving', station: match[1] };
+        return { type: locationType.LEAVING, station: match[1] };
     }
 
     if (match = currentLocation.match(/Left (.+)/)) {
-        return { type: 'left', station: match[1] };
+        return { type: locationType.LEFT, station: match[1] };
+    }
+
+    if (match = currentLocation.match(/Departed (.+)/)) {
+        return { type: locationType.DEPARTED, station: match[1] };
     }
   
     // Unknown format - log it for debugging
@@ -229,6 +272,34 @@ export default function Map(){
             }
 
             console.log('LineIdStationNamesMap -> ', lineIdStationNamesMap);
+
+            //now we get the train positions
+            const arrivalDataArray: { currentLocation: string, station: string, towards: string }[] = [];
+            for(const lineId of Object.keys(lineIdColourMap)){
+                const arrivalData: any[] = await getArrivals(lineId);
+                arrivalData.forEach((data)=>{
+                    arrivalDataArray.push({
+                        currentLocation: data.currentLocation, 
+                        station: data.stationName,
+                        towards: data.towards
+                    });
+                });
+            }
+
+            //get train coordinates
+            for(const data of arrivalDataArray){
+                const currentLocationData = parseCurrentLocation(data.currentLocation, data.station);
+                if(!currentLocationData) continue;
+                switch(currentLocationData.type){
+                    case locationType.BETWEEN:
+                        const betwenResult = getTurfLineStringFromStations(currentLocationData.stationA!, currentLocationData.stationB!, lineIdTurfLineStringMap, lineIdStationNamesMap);
+                        //const point = turf.along()
+                        console.log('Between result -> ', betwenResult);
+                        break;
+                }
+            }
+
+
         }
         });
 
